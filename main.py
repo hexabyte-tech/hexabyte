@@ -1,4 +1,9 @@
+import hashlib
+import hmac
+import json
 import os
+import re
+import secrets
 import sqlite3
 from typing import Optional
 from fastapi import FastAPI, HTTPException, status
@@ -7,11 +12,10 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="SIH Scholarship Offline-First Sync & Pre-Check API",
-    version="1.0.0",
-    description="Backend supporting zero-data-loss local form synchronization and AI pre-validation."
+    version="1.1.0",
+    description="Backend supporting user authentication, profile sync, and offline form synchronization."
 )
 
-# Enable CORS for public website and mobile app access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,34 +26,86 @@ app.add_middleware(
 
 DB_FILE = "sih_scholarship.db"
 
-# Initialize SQLite Database with Offline Sync Queue Support
+# Initialize SQLite Database with Users, Profiles, and Applications
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+    
+    # 1. Users table for Mobile + PIN authentication
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            mobile TEXT UNIQUE NOT NULL,
+            pin_hash TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # 2. Profiles table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS profiles (
+            user_id INTEGER PRIMARY KEY,
+            full_name TEXT,
+            age INTEGER,
+            gender TEXT,
+            state TEXT,
+            district TEXT,
+            tribal_sub_caste TEXT,
+            course_level TEXT,
+            annual_income REAL,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+    """)
+
+    # 3. Applications table for form sync
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS applications (
             id TEXT PRIMARY KEY,
+            user_id INTEGER,
             applicant_name TEXT NOT NULL,
             annual_income REAL NOT NULL,
             category TEXT NOT NULL,
             aadhaar_hash TEXT NOT NULL,
             document_status TEXT DEFAULT 'Pending',
             sync_status TEXT DEFAULT 'Synced',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
+    
     conn.commit()
     conn.close()
 
 init_db()
 
-# Pydantic Models for Validation
+# Security Helpers for PIN Hashing
+def hash_pin(pin: str) -> str:
+    salt = secrets.token_hex(16)
+    scrambled = hashlib.pbkdf2_hmac("sha256", pin.encode(), salt.encode(), 200000).hex()
+    return salt + "$" + scrambled
+
+def pin_is_correct(pin: str, stored: str) -> bool:
+    try:
+        salt, scrambled = stored.split("$")
+        test = hashlib.pbkdf2_hmac("sha256", pin.encode(), salt.encode(), 200000).hex()
+        return hmac.compare_digest(test, scrambled)
+    except Exception:
+        return False
+
+# In-memory Token Store for Sessions
+SESSIONS = {} # token -> user_id
+
+# Pydantic Models
+class AuthPayload(BaseModel):
+    mobile: str = Field(..., pattern=r"^\d{10}$")
+    pin: str = Field(..., pattern=r"^\d{6}$")
+
 class ApplicationPayload(BaseModel):
-    id: str = Field(..., description="Local UUID generated offline")
+    id: str
     applicant_name: str
-    annual_income: float = Field(..., gt=0, description="Family annual income in INR")
-    category: str = Field(..., description="Category like ST, SC, OBC, PVTG, General")
-    aadhaar_hash: str = Field(..., description="Masked or hashed identifier for security")
+    annual_income: float
+    category: str
+    aadhaar_hash: str
 
 class PreCheckRequest(BaseModel):
     applicant_name: str
@@ -57,74 +113,163 @@ class PreCheckRequest(BaseModel):
     category: str
     income_certificate_text: Optional[str] = ""
 
-# 1. AI Pre-Check Engine Endpoint (Validating rules locally/server-side)
-@app.post("/api/v1/pre-check", status_code=status.HTTP_200_OK)
-def run_ai_pre_check(data: PreCheckRequest):
-    """
-    Simulates the AI Pre-Check Engine to catch errors, income ceiling mismatches,
-    and document discrepancies instantly before final submission.
-    """
-    warnings = []
-    is_eligible = True
+# --- AUTH & USER ENDPOINTS ---
 
-    # Example Rule 1: Income ceiling check based on typical welfare schemes (e.g., 2.5 Lakhs limit)
-    if data.category.upper() in ["SC", "ST", "PVTG"] and data.annual_income > 300000:
-        warnings.warn("Income is near or exceeds standard threshold for specific tribal sub-schemes.")
-    elif data.annual_income > 600000:
-        is_eligible = False
-        warnings.append("Annual income exceeds general welfare scheme ceilings (6 Lakhs limit).")
+@app.get("/api/mobile-exists/{mobile}")
+def check_mobile(mobile: str):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM users WHERE mobile = ?", (mobile,))
+    exists = cursor.fetchone() is not None
+    conn.close()
+    return {"exists": exists}
 
-    # Example Rule 2: Name pattern / Text anomaly checks
-    if len(data.applicant_name.strip()) < 3:
-        is_eligible = False
-        warnings.append("Applicant name appears invalid or too short.")
+@app.post("/api/register")
+def register_user(payload: AuthPayload):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("INSERT INTO users (mobile, pin_hash) VALUES (?, ?)", (payload.mobile, hash_pin(payload.pin)))
+        conn.commit()
+        user_id = cursor.lastrowid
+    except sqlite3.IntegrityError:
+        conn.close()
+        raise HTTPException(status_code=400, detail={"error": "exists"})
+    conn.close()
+    
+    token = secrets.token_hex(24)
+    SESSIONS[token] = user_id
+    return {"token": token, "state": {"profile": None, "applications": [], "documents": {}, "notifications": []}}
 
+@app.post("/api/login")
+def login_user(payload: AuthPayload):
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, pin_hash FROM users WHERE mobile = ?", (payload.mobile,))
+    user = cursor.fetchone()
+    conn.close()
+    
+    if not user or not pin_is_correct(payload.pin, user["pin_hash"]):
+        raise HTTPException(status_code=401, detail={"error": "wrong_pin"})
+    
+    user_id = user["id"]
+    token = secrets.token_hex(24)
+    SESSIONS[token] = user_id
+    
+    # Load user profile & applications
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM profiles WHERE user_id = ?", (user_id,))
+    p = cursor.fetchone()
+    
+    profile = None
+    if p:
+        profile = {
+            "name": p["full_name"], "age": p["age"], "gender": p["gender"],
+            "state": p["state"], "district": p["district"], "subCaste": p["tribal_sub_caste"],
+            "courseLevel": p["course_level"], "income": p["annual_income"]
+        }
+        
+    cursor.execute("SELECT * FROM applications WHERE user_id = ?", (user_id,))
+    apps = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
     return {
-        "status": "success",
-        "is_eligible": is_eligible,
-        "warnings": warnings,
-        "message": "Pre-check completed successfully with zero data loss protection."
+        "token": token,
+        "state": {
+            "profile": profile,
+            "applications": apps,
+            "documents": {},
+            "notifications": []
+        }
     }
 
-# 2. Zero-Data-Loss Form Sync Endpoint
-@app.post("/api/v1/sync-application", status_code=status.HTTP_201_CREATED)
-def sync_application(app_data: ApplicationPayload):
-    """
-    Receives payloads queued offline from mobile/web clients when connection is restored.
-    Ensures idempotent storage to prevent duplicate entries.
-    """
-    try:
-        conn = sqlite3.connect(DB_FILE)
-        cursor = conn.cursor()
+@app.get("/api/me")
+def get_me(authorization: Optional[str] = None):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail={"error": "unauthorized"})
+    token = authorization.split(" ")[1]
+    user_id = SESSIONS.get(token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail={"error": "unauthorized"})
         
-        # Check if record already exists (Idempotency)
-        cursor.execute("SELECT id FROM applications WHERE id = ?", (app_data.id,))
-        existing = cursor.fetchone()
-        
-        if existing:
-            conn.close()
-            return {"status": "already_synced", "message": "Application already exists on server."}
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM profiles WHERE user_id = ?", (user_id,))
+    p = cursor.fetchone()
+    
+    profile = None
+    if p:
+        profile = {
+            "name": p["full_name"], "age": p["age"], "gender": p["gender"],
+            "state": p["state"], "district": p["district"], "subCaste": p["tribal_sub_caste"],
+            "courseLevel": p["course_level"], "income": p["annual_income"]
+        }
+    cursor.execute("SELECT * FROM applications WHERE user_id = ?", (user_id,))
+    apps = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    return {"state": {"profile": profile, "applications": apps}}
 
+@app.put("/api/state")
+def update_state(state_data: dict, authorization: Optional[str] = None):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail={"error": "unauthorized"})
+    token = authorization.split(" ")[1]
+    user_id = SESSIONS.get(token)
+    if not user_id:
+        raise HTTPException(status_code=401, detail={"error": "unauthorized"})
+        
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    p = state_data.get("profile")
+    if p:
         cursor.execute("""
-            INSERT INTO applications (id, applicant_name, annual_income, category, aadhaar_hash, sync_status)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (
-            app_data.id,
-            app_data.applicant_name,
-            app_data.annual_income,
-            app_data.category.upper(),
-            app_data.aadhaar_hash,
-            "Synced"
-        ))
-        
+            INSERT INTO profiles (user_id, full_name, age, gender, state, district, tribal_sub_caste, course_level, annual_income)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                full_name=excluded.full_name, age=excluded.age, gender=excluded.gender,
+                state=excluded.state, district=excluded.district, tribal_sub_caste=excluded.tribal_sub_caste,
+                course_level=excluded.course_level, annual_income=excluded.annual_income
+        """, (user_id, p.get("name"), p.get("age"), p.get("gender"), p.get("state"), p.get("district"), p.get("subCaste"), p.get("courseLevel"), p.get("income")))
         conn.commit()
-        conn.close()
-        return {"status": "success", "message": "Offline payload synced successfully."}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    conn.close()
+    return {"ok": True}
 
-@app.get("/api/v1/applications", status_code=status.HTTP_200_OK)
+# --- SCHOLARSHIP & AI SYNC ENDPOINTS ---
+
+@app.post("/api/v1/pre-check")
+def run_ai_pre_check(data: PreCheckRequest):
+    warnings = []
+    is_eligible = True
+    if data.category.upper() in ["SC", "ST", "PVTG"] and data.annual_income > 300000:
+        warnings.append("Income is near or exceeds standard threshold for specific tribal sub-schemes.")
+    elif data.annual_income > 600000:
+        is_eligible = False
+        warnings.append("Annual income exceeds general welfare scheme ceilings.")
+    return {"status": "success", "is_eligible": is_eligible, "warnings": warnings}
+
+@app.post("/api/v1/sync-application", status_code=status.HTTP_201_CREATED)
+def sync_application(app_data: ApplicationPayload, authorization: Optional[str] = None):
+    user_id = 1 # fallback default user if token omitted
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization.split(" ")[1]
+        user_id = SESSIONS.get(token, 1)
+
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO applications (id, user_id, applicant_name, annual_income, category, aadhaar_hash, sync_status)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (app_data.id, user_id, app_data.applicant_name, app_data.annual_income, app_data.category.upper(), app_data.aadhaar_hash, "Synced"))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "message": "Payload synced successfully."}
+
+@app.get("/api/v1/applications")
 def get_applications():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
