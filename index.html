@@ -974,7 +974,7 @@
             <label class="field-label" for="otp-input" data-i18n="enterOtp">Enter the OTP sent to your number</label>
             <input id="otp-input" class="input" type="tel" inputmode="numeric" maxlength="6"
               placeholder="6-digit OTP" />
-            <p class="field-hint" data-i18n="otpHint">Demo mode — any 6 digits will work</p>
+            <p class="field-hint" data-i18n="otpHint">Demo bypass code: <code>123456</code></p>
             <p class="field-error" id="otp-error" hidden></p>
             <button class="btn btn-primary btn-block" id="btn-verify-otp" data-i18n="verifyContinue">Verify and
               continue</button>
@@ -1309,7 +1309,7 @@
       en: {
         langName: "English", tagline: "All tribal student scholarships, in one place",
         chooseLanguage: "Choose your language", mobileNumber: "Mobile number", sendOtp: "Send OTP",
-        enterOtp: "Enter the OTP sent to your number", otpHint: "Demo mode — any 6 digits will work",
+        enterOtp: "Enter the OTP sent to your number", otpHint: "Demo bypass code: 123456",
         verifyContinue: "Verify and continue", changeNumber: "Change number",
         createPin: "Create a 6-digit security PIN", continue: "Continue",
         profileTitle: "Tell us about you", fullName: "Full name", age: "Age", gender: "Gender",
@@ -1343,7 +1343,7 @@
       hi: {
         langName: "हिन्दी", tagline: "सभी जनजातीय छात्रवृत्तियाँ, एक ही स्थान पर",
         chooseLanguage: "अपनी भाषा चुनें", mobileNumber: "मोबाइल नंबर", sendOtp: "OTP भेजें",
-        enterOtp: "अपने नंबर पर भेजा गया OTP दर्ज करें", otpHint: "डेमो मोड — कोई भी 6 अंक काम करेंगे",
+        enterOtp: "अपने नंबर पर भेजा गया OTP दर्ज करें", otpHint: "डेमो बाईपास कोड: 123456",
         verifyContinue: "सत्यापित करें और जारी रखें", changeNumber: "नंबर बदलें",
         createPin: "6 अंकों का सुरक्षा पिन बनाएं", continue: "जारी रखें",
         profileTitle: "अपने बारे में बताएं", fullName: "पूरा नाम", age: "उम्र", gender: "लिंग",
@@ -1377,7 +1377,7 @@
       or: {
         langName: "ଓଡ଼ିଆ", tagline: "ସମସ୍ତ ଆଦିବାସୀ ଛାତ୍ର ଛାତ୍ରବୃତ୍ତି, ଏକ ସ୍ଥାନରେ",
         chooseLanguage: "ଆପଣଙ୍କ ଭାଷା ବାଛନ୍ତୁ", mobileNumber: "ମୋବାଇଲ ନମ୍ବର", sendOtp: "OTP ପଠାନ୍ତୁ",
-        enterOtp: "ଆପଣଙ୍କ ନମ୍ବରକୁ ପଠାଯାଇଥିବା OTP ପ୍ରବେଶ କରନ୍ତୁ", otpHint: "ଡେମୋ ମୋଡ୍ — ଯେକୌଣସି 6 ଅଙ୍କ କାମ କରିବ",
+        enterOtp: "ଆପଣଙ୍କ ନମ୍ବରକୁ ପଠାଯାଇଥିବା OTP ପ୍ରବେଶ କରନ୍ତୁ", otpHint: "ଡେମୋ ବାଇପାସ୍ କୋଡ୍: 123456",
         verifyContinue: "ଯାଞ୍ଚ କରନ୍ତୁ ଏବଂ ଜାରି ରଖନ୍ତୁ", changeNumber: "ନମ୍ବର ବଦଳାନ୍ତୁ",
         createPin: "6 ଅଙ୍କର ସୁରକ୍ଷା ପିନ୍ ତିଆରି କରନ୍ତୁ", continue: "ଜାରି ରଖନ୍ତୁ",
         profileTitle: "ଆପଣଙ୍କ ବିଷୟରେ କୁହନ୍ତୁ", fullName: "ପୂରା ନାମ", age: "ବୟସ", gender: "ଲିଙ୍ଗ",
@@ -1415,8 +1415,6 @@
       return (I18N[lang] && I18N[lang][key]) || I18N.en[key] || key;
     }
 
-
-    // Mock scheme database — stands in for the National Scholarship Portal + state portals
     const SCHEMES = [
       {
         id: "pm-yasasvi-st",
@@ -1541,17 +1539,13 @@
       },
     ];
 
-
-    /* ============================================================
-       Unnati — Unified Scholarship App (demo build)
-       All data is mocked and stored in localStorage. No real backend,
-       no real DigiLocker/Aadhaar/NSP/DBT calls — everything here
-       simulates those integrations for demo purposes.
-       ============================================================ */
-
     const STORAGE_KEY = "unnati_state_v1";
-
     const API_BASE = "https://exabyte-ayot.onrender.com";
+
+    // Silent background wake-up ping for Render's free container
+    window.addEventListener("DOMContentLoaded", () => {
+      fetch(`${API_BASE}/api/health`).catch(() => {});
+    });
 
     function freshState(lang) {
       return {
@@ -1576,7 +1570,7 @@
           delete st.pin;
           return st;
         }
-      } catch (e) { /* ignore corrupt state */}
+      } catch (e) { /* ignore corrupt state */ }
       return freshState();
     }
 
@@ -1595,8 +1589,8 @@
       }
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const err = new Error(data.error || "error");
-        err.code = data.error || "error"; err.status = res.status;
+        const err = new Error(data.detail || data.error || "error");
+        err.code = data.detail || data.error || "error"; err.status = res.status;
         throw err;
       }
       return data;
@@ -1622,10 +1616,11 @@
       try {
         await api("/state", {method: "PUT", body: data, keepalive: !!keepalive});
       } catch (e) {
-        if (e.status === 401) {forceLogout();}
+        if (e.status === 401) { forceLogout(); }
         else console.warn("Could not save to server:", e.code);
       }
     }
+
     function saveState() {
       persistLocal();
       if (APP_STATE.loggedIn && APP_STATE.token) {
@@ -1633,7 +1628,7 @@
         syncTimer = setTimeout(() => syncToServer(), 400);
       }
     }
-    window.addEventListener("pagehide", () => {if (syncTimer) syncToServer(true);});
+    window.addEventListener("pagehide", () => { if (syncTimer) syncToServer(true); });
 
     function forceLogout() {
       clearTimeout(syncTimer); syncTimer = null;
@@ -1747,6 +1742,7 @@
       const tabCreate = document.getElementById("tab-create");
       const panelLogin = document.getElementById("panel-login");
       const panelCreate = document.getElementById("panel-create");
+
       function showTab(name) {
         LOGIN_TAB = name;
         const isLogin = name === "login";
@@ -1757,13 +1753,14 @@
         tabLogin.setAttribute("aria-selected", isLogin);
         tabCreate.setAttribute("aria-selected", !isLogin);
       }
+
       tabLogin.addEventListener("click", () => showTab("login"));
       tabCreate.addEventListener("click", () => showTab("create"));
       document.getElementById("btn-goto-create").addEventListener("click", () => showTab("create"));
       document.getElementById("btn-goto-login").addEventListener("click", () => showTab("login"));
       showTab(LOGIN_TAB);
 
-      function showError(el, msg) {el.textContent = msg; el.hidden = false;}
+      function showError(el, msg) { el.textContent = msg; el.hidden = false; }
 
       function startSession(result, mobile) {
         window.APP_STATE = Object.assign(freshState(APP_STATE.lang), result.state, {
@@ -1795,7 +1792,7 @@
         }
       }
       btnLogin.addEventListener("click", doLogin);
-      loginPin.addEventListener("keydown", (e) => {if (e.key === "Enter") doLogin();});
+      loginPin.addEventListener("keydown", (e) => { if (e.key === "Enter") doLogin(); });
 
       const stepMobile = document.getElementById("login-step-mobile");
       const stepOtp = document.getElementById("login-step-otp");
@@ -1814,20 +1811,37 @@
       btnSendOtp.addEventListener("click", async () => {
         const val = mobileInput.value.trim();
         if (!/^\d{10}$/.test(val)) return showError(mobileError, t("invalidMobile"));
+
         btnSendOtp.disabled = true;
+        mobileError.hidden = true;
+
         try {
           const r = await api("/mobile-exists/" + val, {auth: false});
-          if (r.exists) {btnSendOtp.disabled = false; return showError(mobileError, t("alreadyExists"));}
+          if (r.exists) {
+            btnSendOtp.disabled = false;
+            return showError(mobileError, t("alreadyExists"));
+          }
+
+          const res = await fetch(`${API_BASE}/api/send-otp`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({phoneNumber: val})
+          });
+          const data = await res.json();
+
+          if (res.ok && data.success) {
+            newMobile = val;
+            stepMobile.hidden = true;
+            stepOtp.hidden = false;
+            otpInput.focus();
+          } else {
+            showError(mobileError, data.message || "Failed to send OTP");
+          }
         } catch (e) {
+          showError(mobileError, "Server is waking up. Please try once more.");
+        } finally {
           btnSendOtp.disabled = false;
-          return showError(mobileError, apiErrorMessage(e));
         }
-        btnSendOtp.disabled = false;
-        mobileError.hidden = true;
-        newMobile = val;
-        stepMobile.hidden = true;
-        stepOtp.hidden = false;
-        otpInput.focus();
       });
 
       document.getElementById("btn-back-mobile").addEventListener("click", () => {
@@ -1835,12 +1849,34 @@
         stepMobile.hidden = false;
       });
 
-      document.getElementById("btn-verify-otp").addEventListener("click", () => {
-        if (!/^\d{6}$/.test(otpInput.value.trim())) return showError(otpError, t("invalidOtp"));
+      document.getElementById("btn-verify-otp").addEventListener("click", async () => {
+        const otpVal = otpInput.value.trim();
+        if (!/^\d{6}$/.test(otpVal)) return showError(otpError, t("invalidOtp"));
+
         otpError.hidden = true;
-        stepOtp.hidden = true;
-        stepPin.hidden = false;
-        pinInput.focus();
+        const btnVerify = document.getElementById("btn-verify-otp");
+        btnVerify.disabled = true;
+
+        try {
+          const res = await fetch(`${API_BASE}/api/verify-otp`, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({phoneNumber: newMobile, otp: otpVal})
+          });
+          const data = await res.json();
+
+          if (res.ok && data.success) {
+            stepOtp.hidden = true;
+            stepPin.hidden = false;
+            pinInput.focus();
+          } else {
+            showError(otpError, data.detail || "Invalid OTP");
+          }
+        } catch (err) {
+          showError(otpError, "Verification failed. Please retry.");
+        } finally {
+          btnVerify.disabled = false;
+        }
       });
 
       btnSetPin.addEventListener("click", async () => {
@@ -2025,7 +2061,7 @@
       mount("tpl-scheme-detail");
       bindBack();
       const scheme = SCHEMES.find((s) => s.id === (params && params.id));
-      if (!scheme) {goBack(); return;}
+      if (!scheme) { goBack(); return; }
       document.getElementById("scheme-detail-title").textContent = scheme.name;
       const body = document.getElementById("scheme-detail-body");
       const applied = APP_STATE.applications.find((a) => a.schemeId === scheme.id);
@@ -2065,7 +2101,7 @@
       mount("tpl-apply");
       bindBack();
       const scheme = SCHEMES.find((s) => s.id === (params && params.schemeId));
-      if (!scheme) {goBack(); return;}
+      if (!scheme) { goBack(); return; }
 
       const profile = APP_STATE.profile || {};
       const prefilled = document.getElementById("apply-prefilled");
@@ -2091,7 +2127,7 @@
         const btn = document.getElementById("btn-save-draft");
         const original = btn.textContent;
         btn.textContent = "Draft saved";
-        setTimeout(() => {btn.textContent = original;}, 1400);
+        setTimeout(() => { btn.textContent = original; }, 1400);
       });
 
       form.addEventListener("submit", (e) => {
@@ -2144,7 +2180,7 @@
       mount("tpl-tracker-detail");
       bindBack();
       const app = APP_STATE.applications.find((a) => a.id === (params && params.id));
-      if (!app) {goBack(); return;}
+      if (!app) { goBack(); return; }
       const scheme = SCHEMES.find((s) => s.id === app.schemeId);
       document.getElementById("tracker-detail-title").textContent = scheme ? scheme.name : "Application";
       renderProgressTrack(app);
@@ -2260,7 +2296,7 @@
           navigate("chatbot");
           setTimeout(() => sendChatMessage(transcript), 200);
         };
-        rec.onerror = () => {voiceStatus.textContent = "Couldn't hear that. Try again.";};
+        rec.onerror = () => { voiceStatus.textContent = "Couldn't hear that. Try again."; };
       });
     }
 
@@ -2312,7 +2348,7 @@
       mount("tpl-notifications");
       bindBack();
       const list = document.getElementById("notif-list");
-      APP_STATE.notifications.forEach((n) => {n.read = true;});
+      APP_STATE.notifications.forEach((n) => { n.read = true; });
       saveState();
       if (!APP_STATE.notifications.length) {
         list.innerHTML = `<p style="color:var(--ink-faint); font-size:14px;">No notifications yet.</p>`;
