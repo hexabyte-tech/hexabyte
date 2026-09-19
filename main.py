@@ -6,13 +6,13 @@ import re
 import secrets
 import sqlite3
 from typing import Optional
-from fastapi import FastAPI, HTTPException, status
+from fastapi import FastAPI, HTTPException, status, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 app = FastAPI(
     title="SIH Scholarship Offline-First Sync & Pre-Check API",
-    version="1.1.0",
+    version="1.1.1",
     description="Backend supporting user authentication, profile sync, and offline form synchronization."
 )
 
@@ -26,12 +26,9 @@ app.add_middleware(
 
 DB_FILE = "sih_scholarship.db"
 
-# Initialize SQLite Database with Users, Profiles, and Applications
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    
-    # 1. Users table for Mobile + PIN authentication
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,8 +37,6 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    
-    # 2. Profiles table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS profiles (
             user_id INTEGER PRIMARY KEY,
@@ -56,8 +51,6 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
-
-    # 3. Applications table for form sync
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS applications (
             id TEXT PRIMARY KEY,
@@ -72,13 +65,11 @@ def init_db():
             FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
         )
     """)
-    
     conn.commit()
     conn.close()
 
 init_db()
 
-# Security Helpers for PIN Hashing
 def hash_pin(pin: str) -> str:
     salt = secrets.token_hex(16)
     scrambled = hashlib.pbkdf2_hmac("sha256", pin.encode(), salt.encode(), 200000).hex()
@@ -92,10 +83,8 @@ def pin_is_correct(pin: str, stored: str) -> bool:
     except Exception:
         return False
 
-# In-memory Token Store for Sessions
-SESSIONS = {} # token -> user_id
+SESSIONS = {}
 
-# Pydantic Models
 class AuthPayload(BaseModel):
     mobile: str = Field(..., pattern=r"^\d{10}$")
     pin: str = Field(..., pattern=r"^\d{6}$")
@@ -112,8 +101,6 @@ class PreCheckRequest(BaseModel):
     annual_income: float
     category: str
     income_certificate_text: Optional[str] = ""
-
-# --- AUTH & USER ENDPOINTS ---
 
 @app.get("/api/mobile-exists/{mobile}")
 def check_mobile(mobile: str):
@@ -157,7 +144,6 @@ def login_user(payload: AuthPayload):
     token = secrets.token_hex(24)
     SESSIONS[token] = user_id
     
-    # Load user profile & applications
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
@@ -187,7 +173,7 @@ def login_user(payload: AuthPayload):
     }
 
 @app.get("/api/me")
-def get_me(authorization: Optional[str] = None):
+def get_me(authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail={"error": "unauthorized"})
     token = authorization.split(" ")[1]
@@ -215,7 +201,7 @@ def get_me(authorization: Optional[str] = None):
     return {"state": {"profile": profile, "applications": apps}}
 
 @app.put("/api/state")
-def update_state(state_data: dict, authorization: Optional[str] = None):
+def update_state(state_data: dict, authorization: Optional[str] = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail={"error": "unauthorized"})
     token = authorization.split(" ")[1]
@@ -239,8 +225,6 @@ def update_state(state_data: dict, authorization: Optional[str] = None):
     conn.close()
     return {"ok": True}
 
-# --- SCHOLARSHIP & AI SYNC ENDPOINTS ---
-
 @app.post("/api/v1/pre-check")
 def run_ai_pre_check(data: PreCheckRequest):
     warnings = []
@@ -253,8 +237,8 @@ def run_ai_pre_check(data: PreCheckRequest):
     return {"status": "success", "is_eligible": is_eligible, "warnings": warnings}
 
 @app.post("/api/v1/sync-application", status_code=status.HTTP_201_CREATED)
-def sync_application(app_data: ApplicationPayload, authorization: Optional[str] = None):
-    user_id = 1 # fallback default user if token omitted
+def sync_application(app_data: ApplicationPayload, authorization: Optional[str] = Header(None)):
+    user_id = 1
     if authorization and authorization.startswith("Bearer "):
         token = authorization.split(" ")[1]
         user_id = SESSIONS.get(token, 1)
